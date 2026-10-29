@@ -41,6 +41,8 @@ public class MainActivity extends Activity implements Sampler.Listener {
     private static final int MATCH = ViewGroup.LayoutParams.MATCH_PARENT;
     private static final int WRAP = ViewGroup.LayoutParams.WRAP_CONTENT;
     private static final String GRANT_CMD = "adb shell pm grant com.tasklite.app android.permission.DUMP";
+    private static final String GRANT_CMD2 = "adb shell pm grant com.tasklite.app android.permission.PACKAGE_USAGE_STATS";
+    private static final String GRANT_BOTH = GRANT_CMD + "\n" + GRANT_CMD2;
     private static final long[] INTERVALS = {1000, 2000, 5000};
 
     private final AppIndex index = new AppIndex();
@@ -383,15 +385,15 @@ public class MainActivity extends Activity implements Sampler.Listener {
                 + "1. Settings > About phone > tap Build number 7 times\n"
                 + "2. Developer options > USB debugging ON\n"
                 + "3. Connect to the PC and allow debugging\n"
-                + "4. Run this on the PC:\n\n" + GRANT_CMD + "\n\n"
+                + "4. Run both commands on the PC:\n\n" + GRANT_CMD + "\n" + GRANT_CMD2 + "\n\n"
                 + "5. Come back here and tap Check again.";
         new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Enable Pro mode")
                 .setMessage(msg)
-                .setPositiveButton("Copy command", (x, w) -> {
+                .setPositiveButton("Copy commands", (x, w) -> {
                     ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                    cm.setPrimaryClip(ClipData.newPlainText("cmd", GRANT_CMD));
-                    toast("Command copied");
+                    cm.setPrimaryClip(ClipData.newPlainText("cmd", GRANT_BOTH));
+                    toast("Commands copied");
                 })
                 .setNegativeButton("Close", null)
                 .show();

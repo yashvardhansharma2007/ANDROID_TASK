@@ -24,9 +24,10 @@ final class Pro {
     // process lines are indented by 2 spaces, thread lines by 4 -> only 1..2 spaces match
     private static final Pattern P_PROC = Pattern.compile(
             "^ {1,2}[+-]?([0-9.]+)% (\\d+)/(.+?): ([0-9.]+)% user \\+ ([0-9.]+)% kernel");
-    // e.g. "    Proc #14: prcp  F/ /BFGS  t: 0 3411:com.google.android.gms.persistent/u0a109 (fg-service)"
+    // real line (iQOO / Android 14): "  #83: vis    BFGS ---NFU-T 3414:com.android.launcher3/u0a106 act:activities|client"
+    // older Android prefixes the line with "Proc" or "PERS", so that word is optional
     private static final Pattern P_LRU = Pattern.compile(
-            "^\\s*\\w+\\s+#\\s*\\d+:\\s+(\\S+)\\s.*?\\b(\\d+):(\\S+?)/\\S+");
+            "^\\s*(?:\\w+\\s+)?#\\s*\\d+:\\s+(\\S+)\\s.*?\\b(\\d+):(\\S+?)/\\S+");
     private static final Pattern P_MEM = Pattern.compile(
             "^\\s*([0-9,]+)K: (.+?) \\(pid (\\d+)(?: / [^)]*)?\\)");
 
@@ -138,7 +139,7 @@ final class Pro {
     /** oom_adj label printed by Android (ntv, sys, pers, fore, vis, prcp, svc, home, prev, svcb, cch+N). */
     private static void setImportance(ProcRow p, String tag) {
         String t = tag.toLowerCase();
-        if (t.startsWith("ntv") || t.startsWith("sys") || t.startsWith("pers")) { p.importance = "System"; p.rank = 0; }
+        if (t.startsWith("ntv") || t.startsWith("sys") || t.startsWith("pers") || t.startsWith("psvc")) { p.importance = "System"; p.rank = 0; }
         else if (t.startsWith("fore")) { p.importance = "Foreground"; p.rank = 1; }
         else if (t.startsWith("vis")) { p.importance = "Visible"; p.rank = 2; }
         else if (t.startsWith("prcp") || t.startsWith("bkup")) { p.importance = "Perceptible"; p.rank = 3; }
