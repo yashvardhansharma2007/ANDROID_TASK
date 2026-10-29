@@ -24,6 +24,9 @@ final class Pro {
     // process lines are indented by 2 spaces, thread lines by 4 -> only 1..2 spaces match
     private static final Pattern P_PROC = Pattern.compile(
             "^ {1,2}[+-]?([0-9.]+)% (\\d+)/(.+?): ([0-9.]+)% user \\+ ([0-9.]+)% kernel");
+    // e.g. "    Proc #14: prcp  F/ /BFGS  t: 0 3411:com.google.android.gms.persistent/u0a109 (fg-service)"
+    private static final Pattern P_LRU = Pattern.compile(
+            "^\\s*\\w+\\s+#\\s*\\d+:\\s+(\\S+)\\s.*?\\b(\\d+):(\\S+?)/\\S+");
     private static final Pattern P_MEM = Pattern.compile(
             "^\\s*([0-9,]+)K: (.+?) \\(pid (\\d+)(?: / [^)]*)?\\)");
 
@@ -38,17 +41,31 @@ final class Pro {
             r.state = NEED_GRANT;
             return r;
         }
-        String cpuTxt = exec("cpuinfo", 6);
+        String cpuTxt = exec(6, "cpuinfo");
         LinkedHashMap<Integer, ProcRow> map = new LinkedHashMap<>();
         parseCpu(cpuTxt, map, r);
         if (r.cpuTotal < 0 && map.isEmpty()) {
-            r.state = ERROR;
-            r.message = brief(cpuTxt);
+            // this firmware hides the cpuinfo service from apps: fall back to the activity manager's process list
+            String lruTxt = exec(8, "activity", "lru");
+            parseLru(lruTxt, map);
+            if (map.isEmpty()) {
+                lruTxt = exec(12, "activity", "processes");
+                parseLru(lruTxt, map);
+            }
+            if (map.isEmpty()) {
+                r.state = ERROR;
+                r.message = brief(cpuTxt) + " | " + brief(lruTxt);
+                return r;
+            }
+            r.limited = true;
+            r.state = ACTIVE;
+            for (ProcRow p : map.values()) resolve(p, idx);
+            r.rows.addAll(map.values());
             return r;
         }
         r.state = ACTIVE;
         if (withMem) {
-            parseMem(exec("meminfo", 20), map);
+            parseMem(exec(20, "meminfo"), map);
             r.memLoaded = true;
         }
         for (ProcRow p : map.values()) {
@@ -104,6 +121,35 @@ final class Pro {
         }
     }
 
+
+    private static void parseLru(String text, LinkedHashMap<Integer, ProcRow> map) {
+        for (String line : text.split("\n")) {
+            Matcher m = P_LRU.matcher(line);
+            if (!m.find()) continue;
+            ProcRow p = new ProcRow();
+            p.pid = Integer.parseInt(m.group(2));
+            p.name = m.group(3);
+            p.cpu = -1f;
+            setImportance(p, m.group(1));
+            map.put(p.pid, p);
+        }
+    }
+
+    /** oom_adj label printed by Android (ntv, sys, pers, fore, vis, prcp, svc, home, prev, svcb, cch+N). */
+    private static void setImportance(ProcRow p, String tag) {
+        String t = tag.toLowerCase();
+        if (t.startsWith("ntv") || t.startsWith("sys") || t.startsWith("pers")) { p.importance = "System"; p.rank = 0; }
+        else if (t.startsWith("fore")) { p.importance = "Foreground"; p.rank = 1; }
+        else if (t.startsWith("vis")) { p.importance = "Visible"; p.rank = 2; }
+        else if (t.startsWith("prcp") || t.startsWith("bkup")) { p.importance = "Perceptible"; p.rank = 3; }
+        else if (t.startsWith("hvy")) { p.importance = "Heavy"; p.rank = 4; }
+        else if (t.startsWith("svc")) { p.importance = "Service"; p.rank = 5; }
+        else if (t.startsWith("home")) { p.importance = "Home"; p.rank = 6; }
+        else if (t.startsWith("prev")) { p.importance = "Previous"; p.rank = 7; }
+        else if (t.startsWith("cch")) { p.importance = "Cached"; p.rank = 8; }
+        else { p.importance = tag; p.rank = 9; }
+    }
+
     private static void parseMem(String text, LinkedHashMap<Integer, ProcRow> map) {
         boolean inSection = false, found = false;
         for (String line : text.split("\n")) {
@@ -147,10 +193,13 @@ final class Pro {
     }
 
     /** Runs `dumpsys <service>` and returns its output (empty string on failure). */
-    private static String exec(String service, int timeoutSec) {
+    private static String exec(int timeoutSec, String... args) {
         Process p = null;
         try {
-            p = new ProcessBuilder("/system/bin/dumpsys", service).redirectErrorStream(true).start();
+            java.util.ArrayList<String> cmd = new java.util.ArrayList<>();
+            cmd.add("/system/bin/dumpsys");
+            for (String a : args) cmd.add(a);
+            p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
             StringBuilder sb = new StringBuilder(16384);
             BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()), 16384);
             long deadline = System.currentTimeMillis() + timeoutSec * 1000L;

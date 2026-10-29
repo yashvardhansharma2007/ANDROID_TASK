@@ -456,15 +456,25 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
         ArrayList<ProcRow> rows = new ArrayList<>(r.rows);
         final int sort = procSort;
+        final boolean limited = r.limited;
         Collections.sort(rows, new Comparator<ProcRow>() {
             @Override
             public int compare(ProcRow a, ProcRow b) {
+                if (limited && sort != 2) {
+                    if (a.rank != b.rank) return a.rank - b.rank;
+                    return a.label.compareToIgnoreCase(b.label);
+                }
                 if (sort == 0) return Float.compare(b.cpu, a.cpu);
                 if (sort == 1) return Long.compare(b.pssKb, a.pssKb);
                 return a.label.compareToIgnoreCase(b.label);
             }
         });
         procAdapter.set(rows, sort);
+        if (limited) {
+            procSummary.setText(rows.size() + " running processes, most important first.\n"
+                    + "This phone hides per-process CPU and RAM from apps, so the status is shown instead.");
+            return;
+        }
         procSummary.setText(String.format(Locale.US, "%d processes  |  CPU %s  |  Load %s%s",
                 rows.size(),
                 r.cpuTotal >= 0 ? Math.round(r.cpuTotal) + "%" : "--",
@@ -473,8 +483,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
     }
 
     private void showProcessDialog(final ProcRow p) {
-        String msg = String.format(Locale.US, "PID %d\nProcess  %s\nCPU  %.1f%%\nMemory (PSS)  %s",
-                p.pid, p.name, p.cpu, Ui.kb(p.pssKb));
+        String msg = p.cpu < 0
+                ? String.format(Locale.US, "PID %d\nProcess  %s\nStatus  %s", p.pid, p.name, p.importance)
+                : String.format(Locale.US, "PID %d\nProcess  %s\nCPU  %.1f%%\nMemory (PSS)  %s",
+                        p.pid, p.name, p.cpu, Ui.kb(p.pssKb));
         AlertDialog.Builder d = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle(p.label).setMessage(msg).setNegativeButton("Close", null);
         if (p.pkg != null && !p.pkg.equals(getPackageName())) {
@@ -542,6 +554,14 @@ public class MainActivity extends Activity implements Sampler.Listener {
             ProcRow p = rows.get(pos);
             r.title.setText(p.label);
             r.sub.setText("PID " + p.pid + (p.pkg == null ? "  |  system" : ""));
+            if (p.cpu < 0) { // limited mode: only the process state is known
+                r.v1.setText(p.importance);
+                r.v1.setTextColor(p.rank <= 2 ? Ui.GREEN : (p.rank >= 7 ? Ui.SUB : Ui.TEXT));
+                r.v2.setText("");
+                r.bar.setVisibility(View.GONE);
+                return r;
+            }
+            r.bar.setVisibility(View.VISIBLE);
             r.v1.setText(String.format(Locale.US, "%.1f%%", p.cpu));
             r.v1.setTextColor(p.cpu > 25 ? Ui.RED : (p.cpu > 8 ? Ui.ORANGE : Ui.TEXT));
             r.v2.setText(p.pssKb >= 0 ? Ui.kb(p.pssKb) : "...");

@@ -32,6 +32,8 @@ final class ProcRow {
     String pkg;        // owning package, or null for native / system processes
     float cpu;         // percent of total CPU
     long pssKb = -1;   // proportional set size in kB
+    String importance = ""; // Foreground / Visible / Service / Cached ... (limited mode)
+    int rank = 99;           // lower = more important
 }
 
 /** Result of one Pro-mode poll. */
@@ -42,6 +44,7 @@ final class ProResult {
     float cpuTotal = -1f;
     float load1 = -1f;
     boolean memLoaded;
+    boolean limited;                   // true = only process list + importance, no CPU/RAM
 }
 
 /** One installed app in the Apps tab. */
