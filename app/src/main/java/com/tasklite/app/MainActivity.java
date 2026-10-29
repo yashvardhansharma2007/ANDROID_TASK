@@ -419,7 +419,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
                 .setTitle(p.label).setMessage(msg).setNegativeButton("Close", null);
         if (p.pkg != null && !p.pkg.equals(getPackageName())) {
             d.setPositiveButton("End task", (x, w) -> endTask(p.pkg, p.label));
-            d.setNeutralButton("App info", (x, w) -> openAppInfo(p.pkg));
+            d.setNeutralButton("Force stop", (x, w) -> openAppInfo(p.pkg));
         } else if (p.pkg == null) {
             d.setMessage(msg + "\n\nSystem process: can't be ended from an app.");
         }
@@ -571,7 +571,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
                 .setTitle(a.label).setMessage(msg).setNegativeButton("Close", null);
         if (!a.pkg.equals(getPackageName())) {
             d.setPositiveButton("End task", (x, w) -> endTask(a.pkg, a.label));
-            d.setNeutralButton("App info", (x, w) -> openAppInfo(a.pkg));
+            d.setNeutralButton("Force stop", (x, w) -> openAppInfo(a.pkg));
         }
         d.show();
     }
@@ -770,7 +770,8 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
     private void endTask(String pkg, String label) {
         Apps.endTask(this, pkg);
-        toast("Asked Android to end " + label + " (works on background processes)");
+        toast("End request sent for " + label + ". If it keeps running (open app, music, "
+                + "or phone-maker restriction) use Force stop.");
     }
 
     private void openAppInfo(String pkg) {
