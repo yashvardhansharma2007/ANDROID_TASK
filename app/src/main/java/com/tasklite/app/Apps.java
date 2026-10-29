@@ -4,6 +4,7 @@ import android.app.ActivityManager;
 import android.app.AppOpsManager;
 import android.app.usage.StorageStats;
 import android.app.usage.StorageStatsManager;
+import android.app.usage.UsageEvents;
 import android.app.usage.UsageStats;
 import android.app.usage.UsageStatsManager;
 import android.content.Context;
@@ -11,6 +12,7 @@ import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.UserHandle;
 import android.os.storage.StorageManager;
@@ -18,13 +20,27 @@ import android.os.storage.StorageManager;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
 /** Everything the Apps tab needs: usage stats, app sizes, and "end task". */
 final class Apps {
+    /** Icons are expensive to resolve; both loaders run on the single background thread, so a plain map is safe. */
+    private static final HashMap<String, Drawable> ICONS = new HashMap<>();
+
     private Apps() {}
+
+    private static Drawable icon(PackageManager pm, ApplicationInfo ai) {
+        Drawable d = ICONS.get(ai.packageName);
+        if (d == null) {
+            d = ai.loadIcon(pm);
+            ICONS.put(ai.packageName, d);
+        }
+        return d;
+    }
 
     @SuppressWarnings("deprecation")
     static boolean hasUsageAccess(Context c) {
@@ -66,7 +82,7 @@ final class Apps {
             r.pkg = ai.packageName;
             r.system = !userApp;
             r.label = String.valueOf(ai.loadLabel(pm));
-            r.icon = ai.loadIcon(pm);
+            r.icon = icon(pm, ai);
             UsageStats us = stats.get(ai.packageName);
             if (us != null) {
                 r.fgMs = us.getTotalTimeInForeground();
@@ -82,6 +98,64 @@ final class Apps {
             }
             out.add(r);
         }
+        return out;
+    }
+
+
+    /**
+     * Apps that were opened in the last windowMs. Android keeps such apps in memory, so this is the best
+     * "what is probably running" list an ordinary app can get without Pro mode.
+     */
+    @SuppressWarnings("deprecation")
+    static List<AppRow> recent(Context c, AppIndex index, long windowMs) {
+        ArrayList<AppRow> out = new ArrayList<>();
+        if (!hasUsageAccess(c)) return out;
+        if (index.label.isEmpty()) index.load(c);
+        PackageManager pm = c.getPackageManager();
+        UsageStatsManager usm = (UsageStatsManager) c.getSystemService(Context.USAGE_STATS_SERVICE);
+        long now = System.currentTimeMillis();
+        UsageEvents ev = usm.queryEvents(now - windowMs, now);
+        if (ev == null) return out;
+        HashMap<String, long[]> last = new HashMap<>();
+        UsageEvents.Event e = new UsageEvents.Event();
+        while (ev.hasNextEvent()) {
+            ev.getNextEvent(e);
+            int t = e.getEventType();
+            if (t != UsageEvents.Event.MOVE_TO_FOREGROUND && t != UsageEvents.Event.MOVE_TO_BACKGROUND) continue;
+            String pkg = e.getPackageName();
+            long[] st = last.get(pkg);
+            if (st == null) {
+                st = new long[2];
+                last.put(pkg, st);
+            }
+            st[0] = e.getTimeStamp();
+            st[1] = t == UsageEvents.Event.MOVE_TO_FOREGROUND ? 1 : 0;
+        }
+        String self = c.getPackageName();
+        for (Map.Entry<String, long[]> en : last.entrySet()) {
+            String pkg = en.getKey();
+            if (pkg.equals(self) || pm.getLaunchIntentForPackage(pkg) == null) continue;
+            try {
+                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                AppRow r = new AppRow();
+                r.pkg = pkg;
+                String lab = index.label.get(pkg);
+                r.label = lab != null ? lab : String.valueOf(ai.loadLabel(pm));
+                r.lastUsed = en.getValue()[0];
+                r.foreground = en.getValue()[1] == 1;
+                r.system = !AppIndex.isUserApp(ai);
+                r.icon = icon(pm, ai);
+                out.add(r);
+            } catch (PackageManager.NameNotFoundException ignored) {
+                // uninstalled since the event
+            }
+        }
+        Collections.sort(out, new Comparator<AppRow>() {
+            @Override
+            public int compare(AppRow a, AppRow b) {
+                return Long.compare(b.lastUsed, a.lastUsed);
+            }
+        });
         return out;
     }
 

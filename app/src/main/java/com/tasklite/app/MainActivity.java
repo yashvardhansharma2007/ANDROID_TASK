@@ -31,6 +31,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -62,6 +63,11 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
     // processes
     private LinearLayout procSetup, procHeader;
+    private TextView recentHeader, procEmpty;
+    private RecentAdapter recentAdapter;
+    private List<AppRow> recentRows = new ArrayList<>();
+    private boolean recentLoading = false;
+    private final HashMap<String, Long> ended = new HashMap<>();
     private TextView procSetupTitle, procSetupMsg, procSummary;
     private ListView procList;
     private ProcAdapter procAdapter;
@@ -108,23 +114,23 @@ public class MainActivity extends Activity implements Sampler.Listener {
     protected void onStart() {
         super.onStart();
         sampler.start();
+        ui.postDelayed(recentLoop, 5000);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        boolean now = Apps.hasUsageAccess(this);
-        if (now != lastUsageAccess) {
-            lastUsageAccess = now;
-            appsLoaded = false;
-            if (tab == 2) loadApps();
-        }
+        lastUsageAccess = Apps.hasUsageAccess(this);
         updateUsageCard();
+        // coming back from another app: refresh so what you just opened shows up immediately
+        if (tab == 2) loadApps();
+        else if (tab == 1) loadRecent();
     }
 
     @Override
     protected void onStop() {
         super.onStop();
+        ui.removeCallbacks(recentLoop);
         sampler.stop(); // nothing runs while we are in the background
     }
 
@@ -200,10 +206,13 @@ public class MainActivity extends Activity implements Sampler.Listener {
         }
         sampler.setProcessesVisible(i == 1);
         if (i == 0 && last != null) bindDashboard(last);
-        if (i == 1) renderProcesses();
+        if (i == 1) {
+            renderProcesses();
+            loadRecent();
+        }
         if (i == 2) {
             updateUsageCard();
-            if (!appsLoaded) loadApps();
+            loadApps();
         }
         if (i == 3) updateSystem();
     }
@@ -319,33 +328,30 @@ public class MainActivity extends Activity implements Sampler.Listener {
         procSetupTitle = Ui.tv(this, 16, Ui.TEXT, true);
         procSetupMsg = Ui.tv(this, 13, Ui.SUB, false);
         procSetupMsg.setLineSpacing(0, 1.2f);
-        TextView cmd = Ui.tv(this, 12, Ui.ACCENT, false);
-        cmd.setTypeface(Typeface.MONOSPACE);
-        cmd.setText(GRANT_CMD);
-        cmd.setTextIsSelectable(true);
-        cmd.setPadding(dp(10), dp(10), dp(10), dp(10));
-        cmd.setBackground(Ui.round(this, Ui.CARD_ALT, 10));
         LinearLayout btns = new LinearLayout(this);
-        TextView copy = Chips.pill(this, "Copy command", false);
-        copy.setOnClickListener(v -> {
-            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-            cm.setPrimaryClip(ClipData.newPlainText("cmd", GRANT_CMD));
-            toast("Command copied");
-        });
-        TextView again = Chips.pill(this, "Check again", true);
+        TextView how = Chips.pill(this, "Enable Pro mode", true);
+        how.setOnClickListener(v -> showProHelp());
+        TextView again = Chips.pill(this, "Check again", false);
         again.setOnClickListener(v -> {
             toast("Checking...");
             sampler.recheckPro();
         });
-        btns.addView(copy);
+        btns.addView(how);
         btns.addView(again, left(WRAP, WRAP, 0, 8));
         procSetup.addView(procSetupTitle);
-        procSetup.addView(procSetupMsg, top(MATCH, WRAP, 8));
-        procSetup.addView(cmd, top(MATCH, WRAP, 10));
-        procSetup.addView(btns, top(WRAP, WRAP, 12));
+        procSetup.addView(procSetupMsg, top(MATCH, WRAP, 6));
+        procSetup.addView(btns, top(WRAP, WRAP, 10));
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(MATCH, WRAP);
         slp.setMargins(dp(12), dp(4), dp(12), dp(8));
         page.addView(procSetup, slp);
+
+        recentHeader = Ui.tv(this, 13, Ui.SUB, false);
+        recentHeader.setText("Recently used apps (last 6 hours)");
+        recentHeader.setPadding(dp(16), dp(4), dp(16), dp(6));
+        page.addView(recentHeader, new LinearLayout.LayoutParams(MATCH, WRAP));
+        procEmpty = Ui.tv(this, 13, Ui.SUB, false);
+        procEmpty.setPadding(dp(16), dp(8), dp(16), dp(8));
+        page.addView(procEmpty, new LinearLayout.LayoutParams(MATCH, WRAP));
 
         procHeader = new LinearLayout(this);
         procHeader.setOrientation(LinearLayout.VERTICAL);
@@ -361,38 +367,92 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
         procList = newList();
         procAdapter = new ProcAdapter();
+        recentAdapter = new RecentAdapter();
         procList.setAdapter(procAdapter);
-        procList.setOnItemClickListener((p, v, pos, id) -> showProcessDialog(procAdapter.rows.get(pos)));
+        procList.setOnItemClickListener((av, v, pos, id) -> {
+            Object item = av.getItemAtPosition(pos);
+            if (item instanceof ProcRow) showProcessDialog((ProcRow) item);
+            else if (item instanceof AppRow) showAppDialog((AppRow) item);
+        });
         page.addView(procList, new LinearLayout.LayoutParams(MATCH, 0, 1f));
         return page;
     }
 
+    private void showProHelp() {
+        String msg = "One-time setup. Needs a PC, or Android 11+ wireless debugging.\n\n"
+                + "1. Settings > About phone > tap Build number 7 times\n"
+                + "2. Developer options > USB debugging ON\n"
+                + "3. Connect to the PC and allow debugging\n"
+                + "4. Run this on the PC:\n\n" + GRANT_CMD + "\n\n"
+                + "5. Come back here and tap Check again.";
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Enable Pro mode")
+                .setMessage(msg)
+                .setPositiveButton("Copy command", (x, w) -> {
+                    ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(ClipData.newPlainText("cmd", GRANT_CMD));
+                    toast("Command copied");
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private final Runnable recentLoop = new Runnable() {
+        @Override
+        public void run() {
+            boolean pro = lastPro != null && lastPro.state == Pro.ACTIVE;
+            if (tab == 1 && !pro) loadRecent();
+            ui.postDelayed(this, 5000);
+        }
+    };
+
+    private void loadRecent() {
+        if (recentLoading) return;
+        recentLoading = true;
+        final Context app = getApplicationContext();
+        bg.execute(() -> {
+            final List<AppRow> rows = Apps.recent(app, index, 6L * 3600 * 1000);
+            ui.post(() -> {
+                recentRows = rows;
+                recentLoading = false;
+                if (tab == 1) renderProcesses();
+            });
+        });
+    }
+
     private void renderProcesses() {
         ProResult r = lastPro;
-        if (r == null || r.state != Pro.ACTIVE) {
+        boolean pro = r != null && r.state == Pro.ACTIVE;
+        if (!pro) {
             procSetup.setVisibility(View.VISIBLE);
             procHeader.setVisibility(View.GONE);
-            procList.setVisibility(View.GONE);
+            recentHeader.setVisibility(View.VISIBLE);
+            procList.setVisibility(View.VISIBLE);
             if (r == null) {
                 procSetupTitle.setText("Checking Pro mode...");
-                procSetupMsg.setText("Looking for the DUMP permission.");
+                procSetupMsg.setText("Showing recently used apps meanwhile.");
             } else if (r.state == Pro.NEED_GRANT) {
-                procSetupTitle.setText("Unlock the full process list");
-                procSetupMsg.setText("Android hides other apps' processes from normal apps (hidepid on /proc), "
-                        + "so no app on a non-rooted phone can read them directly.\n\n"
-                        + "Fix (one time):\n1. Phone: Settings > Developer options > USB debugging ON\n"
-                        + "2. Connect to a PC, allow debugging\n3. Run this command on the PC:\n");
+                procSetupTitle.setText("Want exact CPU and RAM per process?");
+                procSetupMsg.setText("Android hides other apps' processes from normal apps, so the list below "
+                        + "shows recently used apps instead. Pro mode (one-time setup) unlocks the real list.");
             } else {
-                procSetupTitle.setText("Pro mode is blocked on this device");
-                procSetupMsg.setText("The permission is granted but this phone's firmware refused the data:\n\""
-                        + r.message + "\"\n\nThe Dashboard, Apps and System tabs still work fully. "
-                        + "If you granted it a moment ago, re-run the command once:\n");
+                procSetupTitle.setText("Pro mode is blocked on this phone");
+                procSetupMsg.setText("\"" + r.message + "\"\nShowing recently used apps instead.");
             }
+            if (procList.getAdapter() != recentAdapter) procList.setAdapter(recentAdapter);
+            recentAdapter.set(recentRows);
+            procEmpty.setVisibility(recentRows.isEmpty() ? View.VISIBLE : View.GONE);
+            procEmpty.setText(Apps.hasUsageAccess(this)
+                    ? "No apps used in the last 6 hours yet. Open an app, then come back here."
+                    : "Allow Usage access (Apps tab > Open settings) to list recently used apps.");
             return;
         }
         procSetup.setVisibility(View.GONE);
+        recentHeader.setVisibility(View.GONE);
+        procEmpty.setVisibility(View.GONE);
         procHeader.setVisibility(View.VISIBLE);
         procList.setVisibility(View.VISIBLE);
+        if (procList.getAdapter() != procAdapter) procList.setAdapter(procAdapter);
 
         ArrayList<ProcRow> rows = new ArrayList<>(r.rows);
         final int sort = procSort;
@@ -424,6 +484,35 @@ public class MainActivity extends Activity implements Sampler.Listener {
             d.setMessage(msg + "\n\nSystem process: can't be ended from an app.");
         }
         d.show();
+    }
+
+    private final class RecentAdapter extends BaseAdapter {
+        ArrayList<AppRow> rows = new ArrayList<>();
+
+        void set(List<AppRow> r) {
+            rows = new ArrayList<>(r);
+            notifyDataSetChanged();
+        }
+
+        @Override public int getCount() { return rows.size(); }
+        @Override public Object getItem(int i) { return rows.get(i); }
+        @Override public long getItemId(int i) { return i; }
+
+        @Override
+        public View getView(int pos, View v, ViewGroup parent) {
+            RowView r = v == null ? new RowView(MainActivity.this, true) : (RowView) v;
+            AppRow a = rows.get(pos);
+            Long endedAt = ended.get(a.pkg);
+            boolean wasEnded = endedAt != null && endedAt >= a.lastUsed;
+            r.icon.setImageDrawable(a.icon);
+            r.title.setText(a.label);
+            r.sub.setText(a.pkg);
+            r.v1.setText(wasEnded ? "Ended" : (a.foreground ? "In use" : "Background"));
+            r.v1.setTextColor(wasEnded ? Ui.SUB : (a.foreground ? Ui.GREEN : Ui.TEXT));
+            r.v2.setText("Used " + Ui.ago(a.lastUsed));
+            r.bar.setVisibility(View.GONE);
+            return r;
+        }
     }
 
     private final class ProcAdapter extends BaseAdapter {
@@ -494,7 +583,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
         controls.setPadding(dp(16), dp(4), dp(16), dp(8));
         LinearLayout row1 = new LinearLayout(this);
         row1.setGravity(Gravity.CENTER_VERTICAL);
-        Chips sort = new Chips(this, new String[]{"Usage", "Size", "Name", "Recent"}, 0, i -> {
+        Chips sort = new Chips(this, new String[]{"Recent", "Usage", "Size", "Name"}, 0, i -> {
             appSort = i;
             renderApps();
         });
@@ -512,6 +601,9 @@ public class MainActivity extends Activity implements Sampler.Listener {
         clean.setOnClickListener(v -> cleanRam());
         row2.addView(systemPill);
         row2.addView(clean, left(WRAP, WRAP, 0, 8));
+        TextView refresh = Chips.pill(this, "Refresh", false);
+        refresh.setOnClickListener(v -> loadApps());
+        row2.addView(refresh, left(WRAP, WRAP, 0, 8));
         controls.addView(row2, top(WRAP, WRAP, 8));
         appsInfo = Ui.tv(this, 12, Ui.SUB, false);
         controls.addView(appsInfo, top(WRAP, WRAP, 8));
@@ -554,9 +646,9 @@ public class MainActivity extends Activity implements Sampler.Listener {
         Collections.sort(rows, new Comparator<AppRow>() {
             @Override
             public int compare(AppRow a, AppRow b) {
-                if (sort == 0) return Long.compare(b.fgMs, a.fgMs);
-                if (sort == 1) return Long.compare(b.sizeBytes, a.sizeBytes);
-                if (sort == 3) return Long.compare(b.lastUsed, a.lastUsed);
+                if (sort == 0) return Long.compare(b.lastUsed, a.lastUsed);
+                if (sort == 1) return Long.compare(b.fgMs, a.fgMs);
+                if (sort == 2) return Long.compare(b.sizeBytes, a.sizeBytes);
                 return a.label.compareToIgnoreCase(b.label);
             }
         });
@@ -619,8 +711,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
             r.title.setText(a.label);
             r.sub.setText("Today " + Ui.duration(a.fgMs) + "  |  " + Ui.ago(a.lastUsed));
             r.v1.setText(Ui.bytes(a.sizeBytes));
-            r.v2.setText(a.system ? "system" : "");
-            if (sort == 1) r.bar.set(a.sizeBytes < 0 ? 0 : a.sizeBytes / (float) maxSize, Ui.PURPLE);
+            Long endedAt = ended.get(a.pkg);
+            boolean wasEnded = endedAt != null && endedAt >= a.lastUsed;
+            r.v2.setText(wasEnded ? "ended" : (a.system ? "system" : ""));
+            if (sort == 2) r.bar.set(a.sizeBytes < 0 ? 0 : a.sizeBytes / (float) maxSize, Ui.PURPLE);
             else r.bar.set(a.fgMs / (float) maxFg, Ui.ACCENT);
             return r;
         }
@@ -770,6 +864,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
     private void endTask(String pkg, String label) {
         Apps.endTask(this, pkg);
+        ended.put(pkg, System.currentTimeMillis());
+        recentAdapter.notifyDataSetChanged();
+        appsAdapter.notifyDataSetChanged();
+        sampler.recheckPro();
         toast("End request sent for " + label + ". If it keeps running (open app, music, "
                 + "or phone-maker restriction) use Force stop.");
     }

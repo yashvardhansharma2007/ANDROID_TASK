@@ -51,5 +51,6 @@ final class AppRow {
     long lastUsed;        // epoch ms, 0 = never / unknown
     long sizeBytes = -1;  // app + data + cache
     boolean system;
+    boolean foreground;   // last usage event was 'moved to foreground'
     Drawable icon;
 }
