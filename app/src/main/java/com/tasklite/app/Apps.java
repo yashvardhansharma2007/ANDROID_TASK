@@ -31,7 +31,20 @@ final class Apps {
     /** Icons are expensive to resolve; both loaders run on the single background thread, so a plain map is safe. */
     private static final HashMap<String, Drawable> ICONS = new HashMap<>();
 
+    /** package -> {size in bytes, time read}. Sizes change slowly, so reuse them for 3 minutes. */
+    private static final HashMap<String, long[]> SIZES = new HashMap<>();
+    private static final HashMap<String, Boolean> LAUNCHABLE = new HashMap<>();
+
     private Apps() {}
+
+    private static boolean launchable(PackageManager pm, String pkg) {
+        Boolean b = LAUNCHABLE.get(pkg);
+        if (b == null) {
+            b = pm.getLaunchIntentForPackage(pkg) != null;
+            LAUNCHABLE.put(pkg, b);
+        }
+        return b;
+    }
 
     private static Drawable icon(PackageManager pm, ApplicationInfo ai) {
         Drawable d = ICONS.get(ai.packageName);
@@ -53,7 +66,7 @@ final class Apps {
     }
 
     /** Heavy: call from a background thread. */
-    static List<AppRow> load(Context c, boolean includeSystem) {
+    static List<AppRow> load(Context c, boolean includeSystem, boolean refreshSizes) {
         PackageManager pm = c.getPackageManager();
         List<ApplicationInfo> infos = pm.getInstalledApplications(0);
         boolean usage = hasUsageAccess(c);
@@ -89,11 +102,18 @@ final class Apps {
                 r.lastUsed = us.getLastTimeUsed();
             }
             if (ssm != null) {
-                try {
-                    StorageStats st = ssm.queryStatsForPackage(StorageManager.UUID_DEFAULT, ai.packageName, me);
-                    r.sizeBytes = st.getAppBytes() + st.getDataBytes() + st.getCacheBytes();
-                } catch (Exception ignored) {
-                    // package vanished or stats not available: leave size unknown
+                long[] cached = SIZES.get(ai.packageName);
+                long nowMs = System.currentTimeMillis();
+                if (!refreshSizes && cached != null && nowMs - cached[1] < 180_000L) {
+                    r.sizeBytes = cached[0];
+                } else {
+                    try {
+                        StorageStats st = ssm.queryStatsForPackage(StorageManager.UUID_DEFAULT, ai.packageName, me);
+                        r.sizeBytes = st.getAppBytes() + st.getDataBytes() + st.getCacheBytes();
+                        SIZES.put(ai.packageName, new long[]{r.sizeBytes, nowMs});
+                    } catch (Exception ignored) {
+                        // package vanished or stats not available: leave size unknown
+                    }
                 }
             }
             out.add(r);
@@ -134,7 +154,7 @@ final class Apps {
         String self = c.getPackageName();
         for (Map.Entry<String, long[]> en : last.entrySet()) {
             String pkg = en.getKey();
-            if (pkg.equals(self) || pm.getLaunchIntentForPackage(pkg) == null) continue;
+            if (pkg.equals(self) || !launchable(pm, pkg)) continue;
             try {
                 ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
                 AppRow r = new AppRow();

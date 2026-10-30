@@ -122,6 +122,12 @@ final class Sampler {
     }
 
     /** Forces an immediate Pro poll (used by the "Check again" button). */
+    /** "Check again" button: forget that cpuinfo was hidden and poll right now. */
+    void retryPro() {
+        Pro.reset();
+        recheckPro();
+    }
+
     void recheckPro() {
         proH.removeCallbacks(proTick);
         proH.post(proTick);

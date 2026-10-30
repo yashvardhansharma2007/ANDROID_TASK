@@ -34,7 +34,15 @@ final class Pro {
     /** pid -> last known PSS, so cheap polls (cpu only) can still show memory. */
     private static final HashMap<Integer, Long> pssCache = new HashMap<>();
 
+    /** True once cpuinfo returned nothing: skip that process spawn on later polls (reset by "Check again"). */
+    private static volatile boolean cpuinfoBlocked;
+    private static volatile String cpuErr = "";
+
     private Pro() {}
+
+    static void reset() {
+        cpuinfoBlocked = false;
+    }
 
     static ProResult poll(Context ctx, boolean withMem, AppIndex idx) {
         ProResult r = new ProResult();
@@ -42,11 +50,13 @@ final class Pro {
             r.state = NEED_GRANT;
             return r;
         }
-        String cpuTxt = exec(6, "cpuinfo");
+        String cpuTxt = cpuinfoBlocked ? cpuErr : exec(6, "cpuinfo");
         LinkedHashMap<Integer, ProcRow> map = new LinkedHashMap<>();
         parseCpu(cpuTxt, map, r);
         if (r.cpuTotal < 0 && map.isEmpty()) {
             // this firmware hides the cpuinfo service from apps: fall back to the activity manager's process list
+            cpuinfoBlocked = true;
+            cpuErr = cpuTxt;
             String lruTxt = exec(8, "activity", "lru");
             parseLru(lruTxt, map);
             if (map.isEmpty()) {

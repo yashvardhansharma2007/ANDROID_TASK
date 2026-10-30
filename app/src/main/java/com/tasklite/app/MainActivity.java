@@ -13,13 +13,20 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.system.Os;
+import android.text.Editable;
+import android.text.TextWatcher;
+import android.util.TypedValue;
 import android.system.OsConstants;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.BaseAdapter;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
@@ -69,6 +76,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
     private RecentAdapter recentAdapter;
     private List<AppRow> recentRows = new ArrayList<>();
     private boolean recentLoading = false;
+    private String procQuery = "", appsQuery = "";
+    private TextView autoPill;
+    private int sysTick;
+    private long lastAppsLoad;
     private final HashMap<String, Long> ended = new HashMap<>();
     private TextView procSetupTitle, procSetupMsg, procSummary;
     private ListView procList;
@@ -124,6 +135,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
         super.onResume();
         lastUsageAccess = Apps.hasUsageAccess(this);
         updateUsageCard();
+        updateAutoPill();
         // coming back from another app: refresh so what you just opened shows up immediately
         if (tab == 2) loadApps();
         else if (tab == 1) loadRecent();
@@ -202,6 +214,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
     private void showTab(int i) {
         tab = i;
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null && content.getWindowToken() != null) {
+            imm.hideSoftInputFromWindow(content.getWindowToken(), 0);
+        }
         for (int k = 0; k < 4; k++) {
             pages[k].setVisibility(k == i ? View.VISIBLE : View.GONE);
             nav[k].setTextColor(k == i ? Ui.ACCENT : Ui.SUB);
@@ -228,7 +244,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
         float used = s.memTotalKb > 0 ? 100f * (s.memTotalKb - s.memAvailKb) / s.memTotalKb : 0;
         ramGraph.push(used, Math.round(used) + "%");
         if (tab == 0) bindDashboard(s);
-        if (tab == 3) updateSystem();
+        if (tab == 3 && (sysTick++ % 2 == 0)) updateSystem(); // thread list = many file reads, so every 2nd tick
     }
 
     @Override
@@ -336,7 +352,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
         TextView again = Chips.pill(this, "Check again", false);
         again.setOnClickListener(v -> {
             toast("Checking...");
-            sampler.recheckPro();
+            sampler.retryPro();
         });
         btns.addView(how);
         btns.addView(again, left(WRAP, WRAP, 0, 8));
@@ -346,6 +362,14 @@ public class MainActivity extends Activity implements Sampler.Listener {
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(MATCH, WRAP);
         slp.setMargins(dp(12), dp(4), dp(12), dp(8));
         page.addView(procSetup, slp);
+
+        EditText procSearch = searchBox("Search processes or apps", q -> {
+            procQuery = q;
+            renderProcesses();
+        });
+        LinearLayout.LayoutParams splp = new LinearLayout.LayoutParams(MATCH, WRAP);
+        splp.setMargins(dp(12), dp(2), dp(12), dp(6));
+        page.addView(procSearch, splp);
 
         recentHeader = Ui.tv(this, 13, Ui.SUB, false);
         recentHeader.setText("Recently used apps (last 6 hours)");
@@ -442,11 +466,16 @@ public class MainActivity extends Activity implements Sampler.Listener {
                 procSetupMsg.setText("\"" + r.message + "\"\nShowing recently used apps instead.");
             }
             if (procList.getAdapter() != recentAdapter) procList.setAdapter(recentAdapter);
-            recentAdapter.set(recentRows);
-            procEmpty.setVisibility(recentRows.isEmpty() ? View.VISIBLE : View.GONE);
-            procEmpty.setText(Apps.hasUsageAccess(this)
+            ArrayList<AppRow> shown = new ArrayList<>();
+            for (AppRow a : recentRows) {
+                if (matches(procQuery, a.label, a.pkg)) shown.add(a);
+            }
+            recentAdapter.set(shown);
+            procEmpty.setVisibility(shown.isEmpty() ? View.VISIBLE : View.GONE);
+            procEmpty.setText(!procQuery.isEmpty() ? "No match for \"" + procQuery + "\""
+                    : (Apps.hasUsageAccess(this)
                     ? "No apps used in the last 6 hours yet. Open an app, then come back here."
-                    : "Allow Usage access (Apps tab > Open settings) to list recently used apps.");
+                    : "Allow Usage access (Apps tab > Open settings) to list recently used apps."));
             return;
         }
         procSetup.setVisibility(View.GONE);
@@ -456,7 +485,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
         procList.setVisibility(View.VISIBLE);
         if (procList.getAdapter() != procAdapter) procList.setAdapter(procAdapter);
 
-        ArrayList<ProcRow> rows = new ArrayList<>(r.rows);
+        ArrayList<ProcRow> rows = new ArrayList<>();
+        for (ProcRow p : r.rows) {
+            if (matches(procQuery, p.label, p.name, String.valueOf(p.pid))) rows.add(p);
+        }
         final int sort = procSort;
         final boolean limited = r.limited;
         Collections.sort(rows, new Comparator<ProcRow>() {
@@ -473,7 +505,8 @@ public class MainActivity extends Activity implements Sampler.Listener {
         });
         procAdapter.set(rows, sort);
         if (limited) {
-            procSummary.setText(rows.size() + " running processes, most important first.\n"
+            procSummary.setText(rows.size() + (procQuery.isEmpty() ? "" : " of " + r.rows.size())
+                    + " running processes, most important first.\n"
                     + "This phone hides per-process CPU and RAM from apps, so the status is shown instead.");
             return;
         }
@@ -603,6 +636,11 @@ public class MainActivity extends Activity implements Sampler.Listener {
         LinearLayout controls = new LinearLayout(this);
         controls.setOrientation(LinearLayout.VERTICAL);
         controls.setPadding(dp(16), dp(4), dp(16), dp(8));
+        EditText appsSearch = searchBox("Search apps", q -> {
+            appsQuery = q;
+            renderApps();
+        });
+        controls.addView(appsSearch, new LinearLayout.LayoutParams(MATCH, WRAP));
         LinearLayout row1 = new LinearLayout(this);
         row1.setGravity(Gravity.CENTER_VERTICAL);
         Chips sort = new Chips(this, new String[]{"Recent", "Usage", "Size", "Name"}, 0, i -> {
@@ -610,23 +648,26 @@ public class MainActivity extends Activity implements Sampler.Listener {
             renderApps();
         });
         row1.addView(sort);
-        controls.addView(row1);
+        controls.addView(row1, top(WRAP, WRAP, 8));
         LinearLayout row2 = new LinearLayout(this);
         row2.setGravity(Gravity.CENTER_VERTICAL);
         systemPill = Chips.pill(this, "System apps", false);
         systemPill.setOnClickListener(v -> {
             showSystem = !showSystem;
             Chips.setPill(systemPill, showSystem);
-            loadApps();
+            loadApps(true);
         });
         TextView clean = Chips.pill(this, "Clean RAM", true);
         clean.setOnClickListener(v -> cleanRam());
         row2.addView(systemPill);
         row2.addView(clean, left(WRAP, WRAP, 0, 8));
         TextView refresh = Chips.pill(this, "Refresh", false);
-        refresh.setOnClickListener(v -> loadApps());
+        refresh.setOnClickListener(v -> loadApps(true));
         row2.addView(refresh, left(WRAP, WRAP, 0, 8));
         controls.addView(row2, top(WRAP, WRAP, 8));
+        autoPill = Chips.pill(this, "Auto force-stop: OFF", false);
+        autoPill.setOnClickListener(v -> showAutoStopHelp());
+        controls.addView(autoPill, top(WRAP, WRAP, 8));
         appsInfo = Ui.tv(this, 12, Ui.SUB, false);
         controls.addView(appsInfo, top(WRAP, WRAP, 8));
         page.addView(controls, new LinearLayout.LayoutParams(MATCH, WRAP));
@@ -645,18 +686,25 @@ public class MainActivity extends Activity implements Sampler.Listener {
     }
 
     private void loadApps() {
+        loadApps(false);
+    }
+
+    /** force = Refresh button: also re-read app sizes. Otherwise sizes come from a 3-minute cache. */
+    private void loadApps(final boolean force) {
         if (appsLoading) return;
+        if (!force && appsLoaded && SystemClock.elapsedRealtime() - lastAppsLoad < 1500) return;
         appsLoading = true;
         appsInfo.setText("Loading apps...");
         final boolean sys = showSystem;
         final Context app = getApplicationContext();
         bg.execute(() -> {
-            final List<AppRow> rows = Apps.load(app, sys);
+            final List<AppRow> rows = Apps.load(app, sys, force);
             index.load(app);
             ui.post(() -> {
                 appsAll = rows;
                 appsLoading = false;
                 appsLoaded = true;
+                lastAppsLoad = SystemClock.elapsedRealtime();
                 renderApps();
             });
         });
@@ -664,7 +712,10 @@ public class MainActivity extends Activity implements Sampler.Listener {
 
     private void renderApps() {
         final int sort = appSort;
-        ArrayList<AppRow> rows = new ArrayList<>(appsAll);
+        ArrayList<AppRow> rows = new ArrayList<>();
+        for (AppRow a : appsAll) {
+            if (matches(appsQuery, a.label, a.pkg)) rows.add(a);
+        }
         Collections.sort(rows, new Comparator<AppRow>() {
             @Override
             public int compare(AppRow a, AppRow b) {
@@ -675,7 +726,7 @@ public class MainActivity extends Activity implements Sampler.Listener {
             }
         });
         appsAdapter.set(rows, sort);
-        appsInfo.setText(rows.size() + " apps");
+        appsInfo.setText(rows.size() + (appsQuery.isEmpty() ? " apps" : " apps found"));
     }
 
     private void showAppDialog(final AppRow a) {
@@ -890,8 +941,86 @@ public class MainActivity extends Activity implements Sampler.Listener {
         recentAdapter.notifyDataSetChanged();
         appsAdapter.notifyDataSetChanged();
         sampler.recheckPro();
-        toast("End request sent for " + label + ". If it keeps running (open app, music, "
-                + "or phone-maker restriction) use Force stop.");
+        if (ForceStopService.isEnabled(this)) {
+            ForceStopService.request(pkg);
+            openAppInfo(pkg);
+            toast("Closing " + label + "...");
+        } else {
+            toast("End request sent for " + label + ". For a full close switch on Auto force-stop "
+                    + "(Apps tab) or use Force stop.");
+        }
+    }
+
+    private void updateAutoPill() {
+        boolean on = ForceStopService.isEnabled(this);
+        autoPill.setText(on ? "Auto force-stop: ON" : "Auto force-stop: OFF");
+        Chips.setPill(autoPill, on);
+    }
+
+    private void showAutoStopHelp() {
+        boolean on = ForceStopService.isEnabled(this);
+        String msg = on
+                ? "Auto force-stop is ON. End task now opens the app-info screen and presses "
+                + "Force stop and OK for you, so the app really closes."
+                : "Optional. When ON, End task opens the app-info screen and presses Force stop and OK "
+                + "for you, so the app really closes.\n\n"
+                + "How to switch it on:\nOpen settings > Accessibility > Installed apps (or Downloaded apps) "
+                + "> TaskLite auto force-stop > ON.\n\n"
+                + "If the switch is greyed out (Restricted setting): Settings > Apps > TaskLite > "
+                + "three dots > Allow restricted settings.\n\n"
+                + "Privacy: it acts only for a few seconds after you tap End task, and only inside the "
+                + "Settings app. It reads nothing else.";
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Auto force-stop")
+                .setMessage(msg)
+                .setPositiveButton("Open settings", (x, w) -> {
+                    try {
+                        startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+                    } catch (Exception e) {
+                        toast("Open Settings > Accessibility");
+                    }
+                })
+                .setNegativeButton("Close", null)
+                .show();
+    }
+
+    private interface QueryCb {
+        void changed(String q);
+    }
+
+    private EditText searchBox(String hint, final QueryCb cb) {
+        EditText e = new EditText(this);
+        e.setHint(hint);
+        e.setHintTextColor(Ui.SUB);
+        e.setTextColor(Ui.TEXT);
+        e.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        e.setSingleLine(true);
+        e.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        e.setPadding(dp(14), dp(10), dp(14), dp(10));
+        e.setBackground(Ui.round(this, Ui.CARD, 12));
+        e.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                cb.changed(s.toString().trim().toLowerCase(Locale.ROOT));
+            }
+        });
+        return e;
+    }
+
+    private static boolean matches(String q, String... fields) {
+        if (q == null || q.isEmpty()) return true;
+        for (String f : fields) {
+            if (f != null && f.toLowerCase(Locale.ROOT).contains(q)) return true;
+        }
+        return false;
     }
 
     private void openAppInfo(String pkg) {

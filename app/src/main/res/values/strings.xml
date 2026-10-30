@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="a11y_description">TaskLite uses this only for a few seconds after you tap End task: it presses Force stop and OK in the Settings app-info screen. It reads nothing else.</string>
+</resources>
